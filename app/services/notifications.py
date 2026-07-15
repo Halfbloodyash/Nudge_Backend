@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Dict, Any
 from twilio.rest import Client
 
-logger = logging.getLogger("nudge-notifications")
+logger = logging.getLogger("sentrix-notifications")
 
 def send_owner_alert_notification(business_id: str, flag: Dict[str, Any], order: Dict[str, Any], supabase: Any):
     """
@@ -27,7 +27,7 @@ def send_owner_alert_notification(business_id: str, flag: Dict[str, Any], order:
         business = biz_res.data[0]
         owner_phone = business.get("owner_phone")
         owner_email = business.get("owner_email")
-        business_name = business.get("name", "Nudge Store")
+        business_name = business.get("name", "Sentrix Store")
     except Exception as e:
         logger.error(f"Error fetching business details for notification: {str(e)}")
         return
@@ -37,13 +37,13 @@ def send_owner_alert_notification(business_id: str, flag: Dict[str, Any], order:
     channel = "whatsapp" if owner_phone else "email"
     
     message_body = (
-        f"⚠️ *Nudge AI Alert: {flag.get('severity', 'HIGH').upper()} Anomaly Flagged*\n\n"
+        f"⚠️ *Sentrix AI Alert: {flag.get('severity', 'HIGH').upper()} Anomaly Flagged*\n\n"
         f"• *Store:* {business_name}\n"
         f"• *Order ID:* {order.get('id', '')[:8]}\n"
         f"• *Value:* ₹{order.get('total_value', 0.0):.2f}\n"
         f"• *Reason:* {flag.get('llm_reasoning', '')}\n"
         f"• *Recommended Action:* {flag.get('recommended_action', 'hold_for_review').upper()}\n\n"
-        f"Please check your Nudge Review Panel to approve or reject."
+        f"Please check your Sentrix Review Panel to approve or reject."
     )
 
     # 2. Twilio WhatsApp notification dispatch

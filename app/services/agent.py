@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, END
 from app.services.anomaly import compute_customer_profile, detect_signals, call_llm_for_reasoning, check_inventory_risk
 from app.services.pipeline import get_supabase
 
-logger = logging.getLogger("nudge-agent")
+logger = logging.getLogger("sentrix-agent")
 
 class AgentState(TypedDict):
     order: Dict[str, Any]

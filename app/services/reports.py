@@ -9,7 +9,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 
-logger = logging.getLogger("nudge-reports")
+logger = logging.getLogger("sentrix-reports")
 
 def generate_pdf_report(business_id: str, start_date: str, end_date: str, supabase: Any, status: str = None, severity: str = None) -> bytes:
     """
@@ -21,7 +21,7 @@ def generate_pdf_report(business_id: str, start_date: str, end_date: str, supaba
     # Default fallback data if Supabase connection is offline
     orders = []
     flags = []
-    business_name = "Nudge Demo Wholesale"
+    business_name = "Sentrix Demo Wholesale"
     
     if supabase:
         try:
@@ -160,7 +160,7 @@ def generate_pdf_report(business_id: str, start_date: str, end_date: str, supaba
     story = []
 
     # Title & Subtitle Header
-    story.append(Paragraph("Nudge AI Order Processing Report", title_style))
+    story.append(Paragraph("Sentrix AI Order Processing Report", title_style))
     story.append(Paragraph(f"Business: {business_name} | Date Range: {start_date} to {end_date}", subtitle_style))
     story.append(Spacer(1, 10))
 

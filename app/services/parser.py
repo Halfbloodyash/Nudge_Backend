@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 from app.schemas import ParsedOrderSchema, OrderItemSchema
 
-logger = logging.getLogger("nudge-parser")
+logger = logging.getLogger("sentrix-parser")
 
 async def extract_order_from_text(message_text: str) -> ParsedOrderSchema:
     """

@@ -8,7 +8,7 @@ load_dotenv()
 from app.services.parser import extract_order_from_text
 from app.schemas import ParsedOrderSchema
 
-logger = logging.getLogger("nudge-pipeline")
+logger = logging.getLogger("sentrix-pipeline")
 
 def get_supabase() -> Optional[Client]:
     url = os.environ.get("SUPABASE_URL", "")

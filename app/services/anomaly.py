@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
 
-logger = logging.getLogger("nudge-anomaly")
+logger = logging.getLogger("sentrix-anomaly")
 
 class AnomalyResult(BaseModel):
     is_flagged: bool = Field(..., description="Whether this order should be flagged as anomalous/suspicious")
