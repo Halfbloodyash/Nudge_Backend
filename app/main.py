@@ -437,6 +437,8 @@ async def record_decision(flag_id: str, payload: DecisionInput):
 async def get_pdf_report(
     start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
     end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
+    status: Optional[str] = Query(None, description="Optional order status filter"),
+    severity: Optional[str] = Query(None, description="Optional anomaly severity filter"),
     business_id: str = Query("00000000-0000-0000-0000-000000000001", description="Business UUID")
 ):
     """
@@ -445,7 +447,7 @@ async def get_pdf_report(
     from app.services.reports import generate_pdf_report
     
     supabase = get_supabase()
-    pdf_bytes = generate_pdf_report(business_id, start_date, end_date, supabase)
+    pdf_bytes = generate_pdf_report(business_id, start_date, end_date, supabase, status, severity)
     
     headers = {
         "Content-Disposition": f'attachment; filename="nudge_report_{business_id}_{start_date}.pdf"'

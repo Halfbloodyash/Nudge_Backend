@@ -11,7 +11,7 @@ from reportlab.lib.units import inch
 
 logger = logging.getLogger("nudge-reports")
 
-def generate_pdf_report(business_id: str, start_date: str, end_date: str, supabase: Any) -> bytes:
+def generate_pdf_report(business_id: str, start_date: str, end_date: str, supabase: Any, status: str = None, severity: str = None) -> bytes:
     """
     Generates a stylized PDF report using ReportLab containing summary statistics,
     orders count, anomaly alerts, and human decisions log.
@@ -31,26 +31,31 @@ def generate_pdf_report(business_id: str, start_date: str, end_date: str, supaba
                 business_name = biz_res.data[0].get("name", business_name)
                 
             # Query orders in date range
-            ord_res = (
+            ord_query = (
                 supabase.table("orders")
                 .select("*, customers(name, whatsapp_phone)")
                 .eq("business_id", business_id)
                 .gte("order_time", f"{start_date}T00:00:00")
                 .lte("order_time", f"{end_date}T23:59:59")
-                .order("order_time", desc=True)
-                .execute()
             )
+            if status:
+                ord_query = ord_query.eq("status", status)
+            
+            ord_res = ord_query.order("order_time", desc=True).execute()
             orders = ord_res.data or []
             
             # Query anomaly flags in date range
-            flg_res = (
+            flg_query = (
                 supabase.table("anomaly_flags")
                 .select("*, orders(id, total_value, status, customers(name))")
                 .eq("business_id", business_id)
                 .gte("created_at", f"{start_date}T00:00:00")
                 .lte("created_at", f"{end_date}T23:59:59")
-                .execute()
             )
+            if severity:
+                flg_query = flg_query.eq("severity", severity)
+                
+            flg_res = flg_query.execute()
             flags = flg_res.data or []
         except Exception as e:
             logger.error(f"Error querying database for PDF report generation: {str(e)}")
