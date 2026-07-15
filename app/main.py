@@ -251,6 +251,116 @@ async def get_order_detail(order_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/customers", tags=["Customer Intelligence"])
+async def list_customers(limit: int = 50, search: Optional[str] = None):
+    """
+    List customers enriched with their behavioral intelligence profiles.
+    """
+    supabase = get_supabase()
+    if not supabase:
+        return {"customers": _get_mock_customers()}
+
+    try:
+        query = (
+            supabase.table("customers")
+            .select("*, customer_profiles(*)")
+            .order("total_orders", desc=True)
+            .limit(limit)
+        )
+        if search:
+            query = query.ilike("name", f"%{search}%")
+            
+        res = query.execute()
+        return {"customers": res.data or []}
+    except Exception as e:
+        logger.error(f"Error fetching customers: {str(e)}")
+        return {"customers": _get_mock_customers(), "error": str(e)}
+
+
+@app.get("/customers/{customer_id}/profile", tags=["Customer Intelligence"])
+async def get_customer_profile_detail(customer_id: str):
+    """
+    Get detailed customer profile, behavioral habits, risk score, and recent orders/flags.
+    """
+    supabase = get_supabase()
+    if not supabase:
+        for c in _get_mock_customers():
+            if c["id"] == customer_id:
+                return _enrich_mock_profile(c)
+        return _enrich_mock_profile(_get_mock_customers()[0])
+
+    try:
+        # 1. Fetch customer + profile
+        c_res = supabase.table("customers").select("*, customer_profiles(*)").eq("id", customer_id).execute()
+        if not c_res.data:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        customer = c_res.data[0]
+        
+        # 2. Fetch recent orders
+        orders_res = (
+            supabase.table("orders")
+            .select("id, order_time, total_value, status, raw_parsed")
+            .eq("customer_id", customer_id)
+            .order("order_time", desc=True)
+            .limit(20)
+            .execute()
+        )
+        recent_orders = orders_res.data or []
+
+        # 3. Fetch recent anomaly flags triggered by this customer's orders
+        order_ids = [o["id"] for o in recent_orders]
+        flags_data = []
+        if order_ids:
+            flags_res = (
+                supabase.table("anomaly_flags")
+                .select("id, order_id, is_flagged, severity, anomaly_type, llm_reasoning, recommended_action, created_at")
+                .in_("order_id", order_ids)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            flags_data = flags_res.data or []
+
+        profile = customer.get("customer_profiles") or {}
+        if isinstance(profile, list) and len(profile) > 0:
+            profile = profile[0]
+        elif isinstance(profile, list):
+            profile = {}
+
+        # Compute Favourite Product from common_items
+        common_items = profile.get("common_items") or []
+        favourite_product = None
+        if common_items:
+            sorted_items = sorted(common_items, key=lambda x: x.get("frequency", 0), reverse=True)
+            favourite_product = sorted_items[0]
+
+        # Calculate Risk Score (0 - 100)
+        risk_score = 12.0  # base low risk
+        if customer.get("is_flagged_risk"):
+            risk_score += 40.0
+        for f in flags_data:
+            if f.get("severity") == "critical":
+                risk_score += 35.0
+            elif f.get("severity") == "high":
+                risk_score += 25.0
+            elif f.get("severity") == "medium":
+                risk_score += 10.0
+        risk_score = min(round(risk_score, 1), 100.0)
+
+        return {
+            "customer": customer,
+            "profile": profile,
+            "favourite_product": favourite_product,
+            "risk_score": risk_score,
+            "recent_orders": recent_orders,
+            "recent_flags": flags_data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching customer profile detail: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/test/simulate-message", tags=["Testing & Dev"])
 async def simulate_whatsapp_message(
     background_tasks: BackgroundTasks,
@@ -553,4 +663,139 @@ def _get_mock_flags() -> list:
             }
         }
     ]
+
+
+def _get_mock_customers() -> list:
+    return [
+        {
+            "id": "cust-101",
+            "business_id": "00000000-0000-0000-0000-000000000001",
+            "name": "Rajesh Grocery Store",
+            "whatsapp_phone": "+91 98112 23344",
+            "total_orders": 120,
+            "total_spend": 60000.00,
+            "first_order_at": "2026-01-10T09:15:00Z",
+            "last_order_at": "2026-07-15T09:30:00Z",
+            "is_flagged_risk": True,
+            "customer_profiles": {
+                "customer_id": "cust-101",
+                "avg_order_value": 500.00,
+                "stddev_order_value": 45.20,
+                "avg_order_frequency_days": 1.20,
+                "stddev_order_frequency_days": 0.35,
+                "typical_order_hour_start": 9,
+                "typical_order_hour_end": 11,
+                "common_items": [
+                    {"product_name": "Milk", "avg_qty": 4.5, "frequency": 118},
+                    {"product_name": "Bread", "avg_qty": 2.0, "frequency": 45},
+                    {"product_name": "Sugar", "avg_qty": 1.0, "frequency": 12}
+                ],
+                "last_recomputed_at": "2026-07-15T08:00:00Z"
+            }
+        },
+        {
+            "id": "cust-102",
+            "business_id": "00000000-0000-0000-0000-000000000001",
+            "name": "Rahul Provision Store",
+            "whatsapp_phone": "+91 98223 34455",
+            "total_orders": 35,
+            "total_spend": 28400.00,
+            "first_order_at": "2026-03-01T14:20:00Z",
+            "last_order_at": "2026-07-14T16:45:00Z",
+            "is_flagged_risk": False,
+            "customer_profiles": {
+                "customer_id": "cust-102",
+                "avg_order_value": 810.00,
+                "stddev_order_value": 65.00,
+                "avg_order_frequency_days": 3.50,
+                "stddev_order_frequency_days": 0.80,
+                "typical_order_hour_start": 14,
+                "typical_order_hour_end": 18,
+                "common_items": [
+                    {"product_name": "Basmati Rice", "avg_qty": 1.0, "frequency": 32},
+                    {"product_name": "Toor Dal", "avg_qty": 2.0, "frequency": 28}
+                ],
+                "last_recomputed_at": "2026-07-14T17:00:00Z"
+            }
+        },
+        {
+            "id": "cust-103",
+            "business_id": "00000000-0000-0000-0000-000000000001",
+            "name": "Priya Daily Mart",
+            "whatsapp_phone": "+91 98334 45566",
+            "total_orders": 14,
+            "total_spend": 7200.00,
+            "first_order_at": "2026-05-12T10:00:00Z",
+            "last_order_at": "2026-07-13T11:10:00Z",
+            "is_flagged_risk": False,
+            "customer_profiles": {
+                "customer_id": "cust-103",
+                "avg_order_value": 514.00,
+                "stddev_order_value": 30.00,
+                "avg_order_frequency_days": 5.00,
+                "stddev_order_frequency_days": 1.10,
+                "typical_order_hour_start": 10,
+                "typical_order_hour_end": 12,
+                "common_items": [
+                    {"product_name": "Amul Butter", "avg_qty": 2.0, "frequency": 14},
+                    {"product_name": "Cheese Slice", "avg_qty": 1.0, "frequency": 10}
+                ],
+                "last_recomputed_at": "2026-07-13T12:00:00Z"
+            }
+        }
+    ]
+
+
+def _enrich_mock_profile(customer: dict) -> dict:
+    profile = customer.get("customer_profiles") or {}
+    common_items = profile.get("common_items") or []
+    favourite_product = None
+    if common_items:
+        sorted_items = sorted(common_items, key=lambda x: x.get("frequency", 0), reverse=True)
+        favourite_product = sorted_items[0]
+
+    risk_score = 12.0
+    if customer.get("is_flagged_risk"):
+        risk_score = 88.5
+
+    # Generate mock recent orders & flags matching the ₹500 vs ₹45,000 concept!
+    recent_orders = []
+    recent_flags = []
+    if customer["id"] == "cust-101":
+        recent_orders = [
+            {"id": "mock-order-101", "order_time": "2026-07-15T09:30:00Z", "total_value": 45000.00, "status": "pending_review", "raw_parsed": {"items": [{"product_name_raw": "Sugar (1kg packet)", "quantity": 250, "unit": "packet", "unit_price": 40, "line_total": 10000}, {"product_name_raw": "Basmati Rice (25kg bag)", "quantity": 58, "unit": "bag", "unit_price": 600, "line_total": 35000}]}},
+            {"id": "mock-order-100", "order_time": "2026-07-14T09:15:00Z", "total_value": 510.00, "status": "approved", "raw_parsed": {"items": [{"product_name_raw": "Milk", "quantity": 5, "unit": "packet", "unit_price": 60, "line_total": 300}, {"product_name_raw": "Bread", "quantity": 3, "unit": "packet", "unit_price": 70, "line_total": 210}]}},
+            {"id": "mock-order-099", "order_time": "2026-07-13T10:05:00Z", "total_value": 480.00, "status": "approved", "raw_parsed": {"items": [{"product_name_raw": "Milk", "quantity": 4, "unit": "packet", "unit_price": 60, "line_total": 240}, {"product_name_raw": "Sugar", "quantity": 2, "unit": "packet", "unit_price": 120, "line_total": 240}]}},
+            {"id": "mock-order-098", "order_time": "2026-07-12T09:40:00Z", "total_value": 520.00, "status": "approved", "raw_parsed": {"items": [{"product_name_raw": "Milk", "quantity": 5, "unit": "packet", "unit_price": 60, "line_total": 300}]}}
+        ]
+        recent_flags = [
+            {
+                "id": "flag-101",
+                "order_id": "mock-order-101",
+                "is_flagged": True,
+                "severity": "critical",
+                "anomaly_type": ["value_spike", "quantity_spike"],
+                "llm_reasoning": "Extreme value anomaly detected: Today's order total is ₹45,000 compared to the customer's historical average order size of ₹500 (Z-score: 984.5). Additionally, quantity spike of 250 packets of sugar observed.",
+                "recommended_action": "hold_for_review",
+                "created_at": "2026-07-15T09:30:05Z"
+            }
+        ]
+    elif customer["id"] == "cust-102":
+        recent_orders = [
+            {"id": "mock-order-102", "order_time": "2026-07-14T16:45:00Z", "total_value": 810.00, "status": "approved", "raw_parsed": {"items": [{"product_name_raw": "Basmati Rice", "quantity": 1, "unit": "bag", "unit_price": 810, "line_total": 810}]}}
+        ]
+    else:
+        recent_orders = [
+            {"id": "mock-order-103", "order_time": "2026-07-13T11:10:00Z", "total_value": 514.00, "status": "approved", "raw_parsed": {"items": [{"product_name_raw": "Amul Butter", "quantity": 2, "unit": "pack", "unit_price": 257, "line_total": 514}]}}
+        ]
+
+    return {
+        "customer": customer,
+        "profile": profile,
+        "favourite_product": favourite_product,
+        "risk_score": risk_score,
+        "recent_orders": recent_orders,
+        "recent_flags": recent_flags
+    }
+
 
