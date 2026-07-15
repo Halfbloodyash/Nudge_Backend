@@ -482,6 +482,39 @@ async def list_flags(limit: int = 50, status: Optional[str] = None):
         return {"flags": _get_mock_flags(), "error": str(e)}
 
 
+@app.post("/orders/{order_id}/decision", tags=["Orders"])
+async def record_order_decision(order_id: str, payload: DecisionInput):
+    """
+    Directly record a human decision (approve, reject, modify) on an order by its order_id.
+    This ensures Human-in-the-Loop review works for all pending orders even if no anomaly flag ID is selected.
+    """
+    supabase = get_supabase()
+    if not supabase:
+        return {"status": "recorded", "mock": True, "order_id": order_id, "decision": payload.decision}
+
+    try:
+        # Update order status in orders table
+        supabase.table("orders").update({"status": payload.decision}).eq("id", order_id).execute()
+
+        # Check if there is an anomaly flag for this order to also record in decisions table
+        flag_res = supabase.table("anomaly_flags").select("id").eq("order_id", order_id).execute()
+        if flag_res.data and len(flag_res.data) > 0:
+            flag_id = flag_res.data[0]["id"]
+            supabase.table("decisions").insert({
+                "anomaly_flag_id": flag_id,
+                "order_id": order_id,
+                "decided_by": "Store Owner (Human-In-The-Loop)",
+                "decision": payload.decision,
+                "notes": payload.notes or "Direct Order Review"
+            }).execute()
+
+        logger.info(f"Direct order decision '{payload.decision}' processed for order {order_id}")
+        return {"status": "recorded", "order_id": order_id, "decision": payload.decision}
+    except Exception as e:
+        logger.error(f"Error processing direct order decision for {order_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/flags/{flag_id}/decision", tags=["Anomaly Flags"])
 async def record_decision(flag_id: str, payload: DecisionInput):
     """
