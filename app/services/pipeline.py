@@ -20,7 +20,40 @@ def get_supabase() -> Optional[Client]:
         return create_client(url, key)
     except Exception as e:
         logger.error(f"Failed to connect to Supabase: {str(e)}")
-        return None
+def _enrich_items_with_catalog_prices(items: list, business_id: str, supabase: Optional[Client]):
+    if not supabase or not items:
+        return
+    try:
+        prods_res = supabase.table("products").select("name, avg_price, unit").eq("business_id", business_id).execute()
+        catalog = prods_res.data or []
+        if not catalog:
+            return
+        
+        for item in items:
+            if not item.unit_price or item.unit_price <= 0:
+                raw_clean = item.product_name_raw.lower().replace("-", " ").strip()
+                raw_words = [w for w in raw_clean.split() if len(w) > 1 or w == "g"]
+                
+                best_match = None
+                best_score = 0
+                for p in catalog:
+                    p_name_clean = p["name"].lower().replace("-", " ")
+                    score = sum(1 for w in raw_words if w in p_name_clean)
+                    if score > best_score:
+                        best_score = score
+                        best_match = p
+                
+                if best_match and best_score > 0 and best_match.get("avg_price"):
+                    item.unit_price = float(best_match["avg_price"])
+                    if not item.unit or item.unit == "unit":
+                        item.unit = best_match.get("unit", "unit")
+                    logger.info(f"[Catalog Enrichment] Matched '{item.product_name_raw}' to '{best_match['name']}' (@ ₹{item.unit_price})")
+            
+            # Ensure line_total is computed accurately
+            if item.unit_price and item.unit_price > 0:
+                item.line_total = float(item.quantity or 1.0) * float(item.unit_price)
+    except Exception as e:
+        logger.warning(f"Error enriching catalog prices: {e}")
 
 async def process_whatsapp_message_async(
     wa_message_id: str,
@@ -31,71 +64,61 @@ async def process_whatsapp_message_async(
     phone_number_id: str
 ):
     """
-    Background worker that runs asynchronously after responding 200 OK to Meta:
-    1. Resolve Business (match phone_number_id or fallback to default test business)
-    2. Insert raw message into `whatsapp_messages` (processed=false)
-    3. Find or auto-create Customer in `customers`
-    4. Call LLM Parser (`extract_order_from_text`)
-    5. Save structured order into `orders` and `order_items`
-    6. Mark `whatsapp_messages` as processed=true and update customer rolling stats
+    Background worker that runs asynchronously after responding 200 OK to Meta.
     """
+    logger.info(f"[LangGraph Node: parse] Starting ingestion for message {wa_message_id}")
     supabase = get_supabase()
     if not supabase:
-        logger.error("Supabase client unavailable. Skipping background persistence.")
+        logger.error("Supabase client not available. Aborting message processing.")
         return
 
-    # 1. Resolve business_id
+    # 1. Resolve or create Business ID
+    business_id = "00000000-0000-0000-0000-000000000001" # Default fallback
     try:
         biz_res = supabase.table("businesses").select("id").eq("whatsapp_number", phone_number_id).execute()
         if biz_res.data:
             business_id = biz_res.data[0]["id"]
         else:
-            # Fallback to default test business for Phase 1 local/dev testing
-            business_id = "00000000-0000-0000-0000-000000000001"
-            # Ensure test business exists
             supabase.table("businesses").upsert({
                 "id": business_id,
-                "name": "Test Wholesale Store",
-                "whatsapp_number": phone_number_id or "15550001234",
-                "owner_email": "owner@teststore.com"
+                "name": "Sentrix Wholesale Hub",
+                "whatsapp_number": phone_number_id
             }).execute()
     except Exception as e:
-        logger.error(f"Error resolving business: {str(e)}")
-        business_id = "00000000-0000-0000-0000-000000000001"
+        logger.warning(f"Could not resolve business for {phone_number_id}: {str(e)}. Using fallback ID.")
 
-    # 2. Find or auto-create Customer
+    # 2. Resolve or create Customer ID
     customer_id = None
     try:
         cust_res = supabase.table("customers").select("*").eq("business_id", business_id).eq("whatsapp_phone", from_phone).execute()
         if cust_res.data:
             customer_id = cust_res.data[0]["id"]
-            # Update customer name if provided and previously empty
-            if customer_name and not cust_res.data[0].get("name"):
+            if customer_name and cust_res.data[0]["name"] != customer_name:
                 supabase.table("customers").update({"name": customer_name}).eq("id", customer_id).execute()
         else:
             cust_insert = supabase.table("customers").insert({
                 "business_id": business_id,
                 "whatsapp_phone": from_phone,
-                "name": customer_name or f"Customer ({from_phone[-4:]})",
-                "first_order_at": datetime.now(timezone.utc).isoformat(),
+                "name": customer_name or f"Partner ({from_phone[-4:]})",
                 "total_orders": 0,
                 "total_spend": 0.0
             }).execute()
             if cust_insert.data:
                 customer_id = cust_insert.data[0]["id"]
     except Exception as e:
-        logger.error(f"Error managing customer: {str(e)}")
+        logger.error(f"Error resolving customer: {str(e)}")
 
-    # 3. Insert raw message into whatsapp_messages
+    # 3. Store raw message in whatsapp_messages table
     db_msg_id = None
     try:
         msg_insert = supabase.table("whatsapp_messages").insert({
             "business_id": business_id,
             "customer_id": customer_id,
             "wa_message_id": wa_message_id,
+            "from_phone": from_phone,
             "raw_text": text,
-            "direction": "inbound",
-            "processed": False
+            "raw_payload": raw_payload,
+            "status": "pending"
         }).execute()
         if msg_insert.data:
             db_msg_id = msg_insert.data[0]["id"]
@@ -110,13 +133,14 @@ async def process_whatsapp_message_async(
     try:
         parsed_order: ParsedOrderSchema = await extract_order_from_text(text)
         
+        # Enrich missing line prices from Supabase product catalog
+        if parsed_order.items:
+            _enrich_items_with_catalog_prices(parsed_order.items, business_id, supabase)
+        
         # Calculate total value estimate from items or top-level estimate
-        total_val = parsed_order.total_estimate
-        if total_val is None and parsed_order.items:
-            # Check if line totals exist
-            computed_total = sum((item.line_total or (item.quantity * item.unit_price if item.unit_price else 0)) for item in parsed_order.items)
-            if computed_total > 0:
-                total_val = computed_total
+        total_val = sum((item.line_total or (item.quantity * item.unit_price if item.unit_price else 0)) for item in parsed_order.items) if parsed_order.items else parsed_order.total_estimate
+        if not total_val or total_val <= 0:
+            total_val = parsed_order.total_estimate or 0.0
 
         # 5. Insert structured order into orders table
         order_insert = supabase.table("orders").insert({
