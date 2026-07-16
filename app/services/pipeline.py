@@ -115,10 +115,9 @@ async def process_whatsapp_message_async(
             "business_id": business_id,
             "customer_id": customer_id,
             "wa_message_id": wa_message_id,
-            "from_phone": from_phone,
             "raw_text": text,
-            "raw_payload": raw_payload,
-            "status": "pending"
+            "direction": "inbound",
+            "processed": False
         }).execute()
         if msg_insert.data:
             db_msg_id = msg_insert.data[0]["id"]
